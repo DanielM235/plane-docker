@@ -1,0 +1,6 @@
+# Test runner dependencies for Plane CE integration tests
+pytest==8.2.0
+pytest-timeout==2.3.1
+requests==2.31.0
+websocket-client==1.8.0
+urllib3==2.2.1

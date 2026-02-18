@@ -1,0 +1,487 @@
+# Production Docker Compose for Plane Community Edition
+#
+# Usage:
+#   cp .env.example .env          # fill in secrets first
+#   docker compose up -d
+#
+# Project name: set COMPOSE_PROJECT_NAME in .env.  All container names,
+# volumes, and networks are prefixed with that value so multiple Plane
+# instances can coexist on the same Docker host without naming collisions.
+# The name: field below seeds the default if COMPOSE_PROJECT_NAME is unset.
+#
+# The Plane internal proxy (Caddy) is exposed on LISTEN_HTTP_PORT
+# so that the system-level nginx on the Debian 12 host can
+# forward traffic to it.  Only that single port is host-mapped.
+# All other inter-service communication happens on the internal
+# Docker network.
+
+name: ${COMPOSE_PROJECT_NAME:-plane-prod}
+
+services:
+
+  # ----------------------------------------------------------
+  # migrator — runs database migrations then exits (one-shot)
+  # ----------------------------------------------------------
+  migrator:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-migrator
+    command: ./bin/docker-entrypoint-migrator.sh
+    environment:
+      DEBUG: ${DEBUG:-0}
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
+      REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_S3_BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-http://plane-minio:9000}
+      USE_MINIO: ${USE_MINIO:-1}
+    depends_on:
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: on-failure
+
+  # ----------------------------------------------------------
+  # api — Django REST API (Gunicorn)
+  # ----------------------------------------------------------
+  api:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-api
+    command: ./bin/docker-entrypoint-api.sh
+    environment:
+      DEBUG: ${DEBUG:-0}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
+      REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_S3_BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-http://plane-minio:9000}
+      USE_MINIO: ${USE_MINIO:-1}
+      MINIO_ENDPOINT_SSL: ${MINIO_ENDPOINT_SSL:-0}
+      FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT:-5242880}
+      WEB_URL: ${WEB_URL:-http://localhost}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-1}
+      EMAIL_USE_SSL: ${EMAIL_USE_SSL:-0}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@example.com}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      GITLAB_CLIENT_ID: ${GITLAB_CLIENT_ID:-}
+      GITLAB_CLIENT_SECRET: ${GITLAB_CLIENT_SECRET:-}
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+      plane-minio:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # plane-backend image has Python but not curl.
+      # The API root "/" returns {"status":"OK"} — that is the health endpoint.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # worker — Celery background task worker
+  # ----------------------------------------------------------
+  worker:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-worker
+    command: ./bin/docker-entrypoint-worker.sh
+    environment:
+      DEBUG: ${DEBUG:-0}
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
+      REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_S3_BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-http://plane-minio:9000}
+      USE_MINIO: ${USE_MINIO:-1}
+      FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT:-5242880}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-1}
+      EMAIL_USE_SSL: ${EMAIL_USE_SSL:-0}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@example.com}
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # beat-worker — Celery beat (scheduled periodic tasks)
+  # ----------------------------------------------------------
+  beat-worker:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-beat-worker
+    command: ./bin/docker-entrypoint-beat.sh
+    environment:
+      DEBUG: ${DEBUG:-0}
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
+      REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      plane-db:
+        condition: service_healthy
+      plane-redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # web — Next.js frontend (main application)
+  # ----------------------------------------------------------
+  web:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-frontend:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${WEB_URL:-http://localhost}
+      NEXT_PUBLIC_DEPLOY_URL: ${WEB_URL:-http://localhost}/spaces
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # nginx inside this image must chown its temp dirs and drop to nginx user
+      - CHOWN
+      - SETUID
+      - SETGID
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # space — public project-sharing service
+  # ----------------------------------------------------------
+  space:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-space:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-space
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${WEB_URL:-http://localhost}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    healthcheck:
+      # plane-space image has wget but not curl; app is served under /spaces/
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3000/spaces/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # admin — instance administration interface (god-mode)
+  # ----------------------------------------------------------
+  admin:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-admin:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-admin
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${WEB_URL:-http://localhost}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # live — real-time WebSocket collaboration service
+  # ----------------------------------------------------------
+  live:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-live:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-live
+    environment:
+      LIVE_BASE_PATH: /live
+      API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # plane-proxy — Caddy-based internal traffic router
+  #
+  # This is the single entry-point that nginx (production) or
+  # the nginx test container will proxy traffic to.
+  # Only this service exposes a host port.
+  # ----------------------------------------------------------
+  plane-proxy:
+    image: ${DOCKERHUB_USER:-makeplane}/plane-proxy:${APP_RELEASE:-stable}
+    pull_policy: ${PULL_POLICY:-if_not_present}
+    container_name: ${COMPOSE_PROJECT_NAME}-proxy
+    ports:
+      - "127.0.0.1:${LISTEN_HTTP_PORT:-8080}:80"
+    environment:
+      # Tell the internal Caddy router where each upstream is.
+      WEB_URL: http://web:3000
+      SPACE_URL: http://space:3000
+      ADMIN_URL: http://admin:3000
+      API_URL: http://api:8000
+      LIVE_URL: http://live:3000
+      MINIO_URL: http://plane-minio:9000
+      BUCKET_NAME: ${BUCKET_NAME:-uploads}
+      # Caddy site address — must be set so the Caddyfile site block has a key.
+      # In the Docker container we listen on plain HTTP port 80; TLS terminates
+      # at the system nginx reverse proxy on the host.
+      SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-:80}
+      FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT:-5242880}
+      CERT_EMAIL: ${CERT_EMAIL:-}
+      CERT_ACME_CA: ${CERT_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      CERT_ACME_DNS: ${CERT_ACME_DNS:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-0.0.0.0/0}
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      space:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Caddy binds to port 80 (< 1024) and may drop to caddy user
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+    healthcheck:
+      # plane-proxy (Caddy) image has curl available
+      test: ["CMD-SHELL", "curl -fs http://localhost:80/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # plane-db — PostgreSQL 15
+  # ----------------------------------------------------------
+  plane-db:
+    image: postgres:15.7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plane}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-plane}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plane} -d ${POSTGRES_DB:-plane}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # plane-redis — Redis 7
+  # ----------------------------------------------------------
+  plane-redis:
+    image: redis:7.2-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    # Run directly as the redis user so cap_drop:ALL does not block the
+    # internal privilege-switch that the Alpine redis image performs via gosu.
+    user: redis
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # plane-mq — RabbitMQ (Celery broker)
+  # ----------------------------------------------------------
+  plane-mq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-mq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-plane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-plane}
+    volumes:
+      - mqdata:/var/lib/rabbitmq
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # plane-minio — MinIO S3-compatible object storage
+  # ----------------------------------------------------------
+  plane-minio:
+    image: minio/minio:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+# ----------------------------------------------------------------
+# Named volumes — prefixed by COMPOSE_PROJECT_NAME automatically
+# ----------------------------------------------------------------
+volumes:
+  pgdata:
+  redisdata:
+  mqdata:
+  miniodata:
+
+# ----------------------------------------------------------------
+# Networks — prefixed by COMPOSE_PROJECT_NAME automatically
+# ----------------------------------------------------------------
+networks:
+  backend:
+    driver: bridge
