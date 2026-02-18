@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+LABEL description="Plane CE integration test runner"
+
+# Install curl and other networking tools for debugging
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tests
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Default command runs the full test suite
+CMD ["pytest", "-v", "--tb=short", "--color=yes"]

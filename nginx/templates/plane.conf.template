@@ -1,0 +1,67 @@
+# Plane server block template
+#
+# Variables (expanded at runtime via envsubst or sed):
+#   ${NGINX_SERVER_NAME}  — domain served (e.g. plane.example.com)
+#   ${NGINX_PROXY_PASS}   — upstream for plane-proxy (e.g. http://127.0.0.1:8080)
+#
+# Production installation on Debian 12:
+#   1. Install dependencies:
+#        sudo apt install nginx
+#   2. Render this template:
+#        export NGINX_SERVER_NAME=plane.example.com
+#        export NGINX_PROXY_PASS=http://127.0.0.1:8080
+#        envsubst '${NGINX_SERVER_NAME} ${NGINX_PROXY_PASS}' \
+#          < nginx/templates/plane.conf.template \
+#          > /etc/nginx/sites-available/plane
+#   3. Enable the site:
+#        sudo ln -sf /etc/nginx/sites-available/plane \
+#                    /etc/nginx/sites-enabled/plane
+#        sudo nginx -t && sudo systemctl reload nginx
+#
+# Test container:
+#   The nginx official image picks up *.template files from
+#   /etc/nginx/templates/ and writes the rendered result to
+#   /etc/nginx/conf.d/ automatically — the template is mounted
+#   in docker-compose.test.yml.
+
+server {
+    listen 80;
+    server_name ${NGINX_SERVER_NAME};
+
+    # -------------------------------------------------------
+    # Security headers
+    # -------------------------------------------------------
+    add_header X-Content-Type-Options  "nosniff"         always;
+    add_header X-Frame-Options         "SAMEORIGIN"      always;
+    add_header X-XSS-Protection        "1; mode=block"   always;
+    add_header Referrer-Policy         "no-referrer-when-downgrade" always;
+
+    # -------------------------------------------------------
+    # Proxy settings shared by all location blocks
+    # -------------------------------------------------------
+    # Do NOT forward the upstream Server header — let nginx-test / system nginx
+    # control it via server_tokens off (hides version number).
+    proxy_hide_header  Server;
+    proxy_set_header  Host              $http_host;
+    proxy_set_header  X-Real-IP        $remote_addr;
+    proxy_set_header  X-Forwarded-For  $proxy_add_x_forwarded_for;
+    proxy_set_header  X-Forwarded-Proto $scheme;
+
+    # WebSocket support (needed for /live/ and collaboration features)
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade    $http_upgrade;
+    proxy_set_header   Connection "upgrade";
+
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_connect_timeout 60s;
+
+    # -------------------------------------------------------
+    # All traffic → Plane internal proxy (Caddy)
+    # The Caddy proxy handles routing to web / api / space /
+    # admin / live / minio based on path prefix.
+    # -------------------------------------------------------
+    location / {
+        proxy_pass ${NGINX_PROXY_PASS};
+    }
+}

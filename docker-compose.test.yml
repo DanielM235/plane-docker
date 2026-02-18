@@ -1,0 +1,94 @@
+# Test overlay for Plane Community Edition
+#
+# Extends docker-compose.yml to add:
+#   1. An nginx container that mirrors the production Debian 12 setup.
+#   2. A pytest-based test-runner container.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     run --rm test-runner
+#
+# All tests are performed against the nginx layer — never directly
+# against internal services.
+
+services:
+
+  # ----------------------------------------------------------
+  # nginx-test — mirrors the system nginx on the Debian 12 host
+  #
+  # In production, nginx is installed at OS level and configured
+  # via /etc/nginx/sites-available/plane.  Here we run the same
+  # configuration inside a container so CI tests hit an identical
+  # proxy layer.
+  # ----------------------------------------------------------
+  nginx-test:
+    image: nginx:1.27-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-nginx-test
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates/plane.conf.template:/etc/nginx/templates/plane.conf.template:ro
+      # Suppress the default server block that ships with the nginx image;
+      # it would conflict with our plane.conf (same server_name / port).
+      - /dev/null:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      # Variables expanded inside the template by nginx's envsubst mechanism:
+      NGINX_SERVER_NAME: ${DOMAIN_NAME:-localhost}
+      NGINX_PROXY_PASS: http://${COMPOSE_PROJECT_NAME:-plane}-proxy:80
+    ports:
+      - "127.0.0.1:${NGINX_TEST_PORT:-9080}:80"
+    depends_on:
+      plane-proxy:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # nginx master process needs to bind port 80 and chown its temp dirs
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: "no"
+
+  # ----------------------------------------------------------
+  # test-runner — pytest inside Docker, hits nginx-test
+  # ----------------------------------------------------------
+  test-runner:
+    build:
+      context: ./tests
+      dockerfile: Dockerfile.test
+    container_name: ${COMPOSE_PROJECT_NAME}-test-runner
+    volumes:
+      # Expose the project root read-only so test_06_setup_sh.py can copy
+      # setup.sh, .env.example, and VERSION into isolated tmp directories.
+      - ./:/project:ro
+    environment:
+      # Base URL all tests use — always via nginx, never internal services
+      BASE_URL: http://nginx-test:80
+      # Individual service URLs needed for partial probing (resolved inside backend network)
+      API_URL: http://api:8000
+      MINIO_URL: http://plane-minio:9000
+      LIVE_URL: http://live:3000
+      # Test behaviour tweaks
+      TEST_TIMEOUT: ${TEST_TIMEOUT:-60}
+      TEST_RETRY_INTERVAL: ${TEST_RETRY_INTERVAL:-5}
+    depends_on:
+      nginx-test:
+        condition: service_healthy
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Exit code from the test-runner becomes the compose run exit code
+    restart: "no"

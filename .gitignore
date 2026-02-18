@@ -1,6 +1,8 @@
-# Environment files (contain secrets)
+# Environment files (contain secrets — never commit)
+# .env.example IS committed (it is the safe public template)
 .env
-.env.*
+.env.local
+.env.*.local
 
 # Docker Compose override / local config
 docker-compose.override.yml
