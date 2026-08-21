@@ -1,0 +1,20 @@
+# Canonical Plane CE migration order (oldest → newest).
+#
+# `./setup.sh upgrade` walks this list starting from the APP_RELEASE value
+# currently set in `.env` and applies each subsequent version in turn,
+# backing up before every step.
+#
+# Rules:
+#   - One version per line; blank lines and lines starting with "#" are
+#     ignored.
+#   - Each version listed here must have a matching `releases/<version>.env`
+#     file next to this one.
+#   - Keep the list in ascending release order and append new releases at
+#     the bottom when they are published.
+#
+# Current migration path (documented in docs/MIGRATION.md):
+v1.2.3
+v1.3.0
+v1.3.1
+v1.4.0
+v1.4.1

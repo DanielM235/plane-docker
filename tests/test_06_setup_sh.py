@@ -12,133 +12,11 @@ Layout assumptions inside the test container (set by docker-compose.test.yml):
   /project/VERSION         — config version file
 """
 
-import os
 import re
-import shutil
-import subprocess
-import textwrap
-from pathlib import Path
 
 import pytest
 
-# ----------------------------------------------------------------
-# Project-root paths (mounted read-only at /project by compose)
-# ----------------------------------------------------------------
-PROJECT_ROOT = Path("/project")
-SETUP_SH     = PROJECT_ROOT / "setup.sh"
-ENV_EXAMPLE  = PROJECT_ROOT / ".env.example"
-VERSION_FILE = PROJECT_ROOT / "VERSION"
-
-# ----------------------------------------------------------------
-# Fake docker binary
-#
-# Handles every docker / docker-compose call that setup.sh makes:
-#   docker version --format '...'   → version string for prerequisites check
-#   docker compose version          → compose version string
-#   docker compose ... pull         → noop (exit 0)
-#   docker compose ... run ...      → noop (exit 0)
-#   docker compose ... up ...       → noop (exit 0)
-#   docker compose ... down         → noop (exit 0)
-#   docker compose ... ps           → noop (exit 0)
-# ----------------------------------------------------------------
-_DOCKER_STUB = textwrap.dedent("""\
-    #!/usr/bin/env bash
-    # Log every invocation (all args on one line) when DOCKER_LOG is set.
-    if [[ -n "${DOCKER_LOG:-}" ]]; then
-        echo "$*" >> "${DOCKER_LOG}"
-    fi
-    if [[ "${1:-}" == "version" ]]; then
-        echo "26.0.0"
-        exit 0
-    fi
-    if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
-        echo "Docker Compose version v2.24.0"
-        exit 0
-    fi
-    # All other compose sub-commands succeed silently
-    exit 0
-""")
-
-
-# ----------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------
-@pytest.fixture()
-def workspace(tmp_path: Path) -> Path:
-    """
-    Populate a fresh temp directory with everything setup.sh needs:
-      - setup.sh   (executable copy from /project)
-      - .env.example
-      - VERSION
-      - docker-compose.yml       (empty stub — never parsed in these tests)
-      - docker-compose.test.yml  (empty stub)
-      - bin/docker               (fake docker binary)
-    """
-    # Copy project files
-    shutil.copy(SETUP_SH, tmp_path / "setup.sh")
-    shutil.copy(ENV_EXAMPLE, tmp_path / ".env.example")
-    shutil.copy(VERSION_FILE, tmp_path / "VERSION")
-    (tmp_path / "setup.sh").chmod(0o755)
-
-    # setup.sh references COMPOSE_FILE and COMPOSE_TEST_FILE; touch them so
-    # the script doesn't error on file-not-found when docker compose is called.
-    (tmp_path / "docker-compose.yml").write_text("# stub\n")
-    (tmp_path / "docker-compose.test.yml").write_text("# stub\n")
-
-    # Fake docker binary
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    docker_stub = bin_dir / "docker"
-    docker_stub.write_text(_DOCKER_STUB)
-    docker_stub.chmod(0o755)
-
-    return tmp_path
-
-
-def run_setup(
-    workspace: Path,
-    *args: str,
-    extra_env: dict | None = None,
-) -> subprocess.CompletedProcess:
-    """
-    Execute setup.sh inside *workspace* with the fake docker on PATH.
-    Returns the CompletedProcess (stdout + stderr captured, text mode).
-    Never raises on non-zero exit — callers assert the exit code.
-
-    *extra_env* is merged into the subprocess environment after the defaults,
-    allowing individual tests to inject variables (e.g. DOCKER_LOG).
-    """
-    env = os.environ.copy()
-    # Prepend our stub dir so "docker" resolves to the fake binary
-    env["PATH"] = str(workspace / "bin") + ":" + env.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-    # Prevent any ambient host variables from leaking into .env generation
-    for var in ("COMPOSE_PROJECT_NAME", "DOMAIN_NAME", "LISTEN_HTTP_PORT", "WEB_URL"):
-        env.pop(var, None)
-    if extra_env:
-        env.update(extra_env)
-
-    return subprocess.run(
-        ["bash", str(workspace / "setup.sh")] + list(args),
-        cwd=str(workspace),
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-# ----------------------------------------------------------------
-# Helper
-# ----------------------------------------------------------------
-def env_value(workspace: Path, key: str) -> str | None:
-    """Return the value of *key* from workspace/.env, or None."""
-    env_path = workspace / ".env"
-    if not env_path.exists():
-        return None
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if line.startswith(f"{key}="):
-            return line.split("=", 1)[1]
-    return None
+from support import env_value, run_setup
 
 
 # ================================================================
@@ -211,6 +89,14 @@ class TestInstallEnvCreation:
         value = env_value(workspace, "SECRET_KEY")
         assert value is not None
         assert re.fullmatch(r"[0-9a-f]+", value), "SECRET_KEY must be lowercase hex"
+
+    def test_live_server_secret_key_generated(self, workspace):
+        """LIVE_SERVER_SECRET_KEY must be generated and be at least 64 hex chars."""
+        run_setup(workspace, "install")
+        value = env_value(workspace, "LIVE_SERVER_SECRET_KEY")
+        assert value is not None, "LIVE_SERVER_SECRET_KEY not found in .env"
+        assert len(value) >= 64, f"LIVE_SERVER_SECRET_KEY too short: {len(value)} chars"
+        assert re.fullmatch(r"[0-9a-f]+", value), "LIVE_SERVER_SECRET_KEY must be lowercase hex"
 
     def test_skips_env_if_already_exists(self, workspace):
         """If .env already exists install must not overwrite it."""

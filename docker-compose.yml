@@ -30,6 +30,7 @@ services:
     environment:
       DEBUG: ${DEBUG:-0}
       SECRET_KEY: ${SECRET_KEY}
+      LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
       REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
@@ -52,6 +53,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "${MIGRATOR_CPU_LIMIT:-1.0}"
+          memory: "${MIGRATOR_MEM_LIMIT:-1g}"
+          pids: 128
     restart: on-failure
 
   # ----------------------------------------------------------
@@ -66,6 +73,7 @@ services:
       DEBUG: ${DEBUG:-0}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       SECRET_KEY: ${SECRET_KEY}
+      LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
       REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
@@ -118,6 +126,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "${API_CPU_LIMIT:-2.0}"
+          memory: "${API_MEM_LIMIT:-2g}"
+          pids: 256
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -131,6 +145,7 @@ services:
     environment:
       DEBUG: ${DEBUG:-0}
       SECRET_KEY: ${SECRET_KEY}
+      LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
       REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
@@ -164,6 +179,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      # plane-backend ships pgrep; verify the Celery worker process is alive.
+      test: ["CMD-SHELL", "pgrep -x celery >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPU_LIMIT:-2.0}"
+          memory: "${WORKER_MEM_LIMIT:-2g}"
+          pids: 256
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -177,6 +205,7 @@ services:
     environment:
       DEBUG: ${DEBUG:-0}
       SECRET_KEY: ${SECRET_KEY}
+      LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER:-plane}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-plane-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-plane}
       REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER:-plane}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-plane-mq}:${RABBITMQ_PORT:-5672}/${RABBITMQ_DEFAULT_VHOST:-plane}
@@ -195,6 +224,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      # Verify the Celery beat scheduler process is alive.
+      test: ["CMD-SHELL", "pgrep -x celery >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: "${BEAT_WORKER_CPU_LIMIT:-0.5}"
+          memory: "${BEAT_WORKER_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -227,6 +269,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${WEB_CPU_LIMIT:-1.0}"
+          memory: "${WEB_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -258,6 +306,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${SPACE_CPU_LIMIT:-1.0}"
+          memory: "${SPACE_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -288,6 +342,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${ADMIN_CPU_LIMIT:-1.0}"
+          memory: "${ADMIN_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -300,8 +360,18 @@ services:
     environment:
       LIVE_BASE_PATH: /live
       API_BASE_URL: http://api:8000
+      # Required by the live server's environment validation (zod).  Must
+      # match the LIVE_SERVER_SECRET_KEY set on the backend services.
+      LIVE_SERVER_SECRET_KEY: ${LIVE_SERVER_SECRET_KEY}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      # The live server uses Redis for presence / pub-sub.
+      REDIS_HOST: ${REDIS_HOST:-plane-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_URL: redis://${REDIS_HOST:-plane-redis}:${REDIS_PORT:-6379}/
     depends_on:
       api:
+        condition: service_healthy
+      plane-redis:
         condition: service_healthy
     networks:
       - backend
@@ -309,6 +379,20 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      # plane-live is a Node.js app listening on port 3000; the image
+      # ships BusyBox nc but not curl.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${LIVE_CPU_LIMIT:-1.0}"
+          memory: "${LIVE_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -370,6 +454,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${PROXY_CPU_LIMIT:-1.0}"
+          memory: "${PROXY_MEM_LIMIT:-256m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -389,12 +479,25 @@ services:
       - backend
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # postgres entrypoint chowns PGDATA and drops to the postgres user
+      - CHOWN
+      - SETUID
+      - SETGID
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plane} -d ${POSTGRES_DB:-plane}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "${DB_CPU_LIMIT:-2.0}"
+          memory: "${DB_MEM_LIMIT:-2g}"
+          pids: 256
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -420,6 +523,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT:-1.0}"
+          memory: "${REDIS_MEM_LIMIT:-512m}"
+          pids: 128
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -438,12 +547,27 @@ services:
       - backend
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # rabbitmq entrypoint chowns its data dir and drops to the rabbitmq user
+      - CHOWN
+      - SETUID
+      - SETGID
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # Run as the rabbitmq user: with cap_drop ALL, root can no longer read
+      # /var/lib/rabbitmq/.erlang.cookie (no CAP_DAC_OVERRIDE).
+      test: ["CMD-SHELL", "/sbin/su-exec rabbitmq rabbitmq-diagnostics -q ping || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${MQ_CPU_LIMIT:-1.0}"
+          memory: "${MQ_MEM_LIMIT:-1g}"
+          pids: 256
     restart: unless-stopped
 
   # ----------------------------------------------------------
@@ -462,12 +586,25 @@ services:
       - backend
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # minio chowns its data dir and drops privileges on startup
+      - CHOWN
+      - SETUID
+      - SETGID
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:9000/minio/health/live || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "${MINIO_CPU_LIMIT:-2.0}"
+          memory: "${MINIO_MEM_LIMIT:-1g}"
+          pids: 256
     restart: unless-stopped
 
 # ----------------------------------------------------------------

@@ -19,12 +19,15 @@ cat VERSION
 ```
 
 Plane's own release tag is controlled by `APP_RELEASE` in `.env`
-(default: `stable`).  Both versions together identify a deployment
+(default: `v1.2.3`).  Both versions together identify a deployment
 unambiguously:
 
 ```
-plane-docker 1.0.0  +  Plane CE stable (e.g. v0.23.0)
+plane-docker 1.1.0  +  Plane CE v1.2.3  (migrate to v1.4.1 via ./setup.sh upgrade)
 ```
+
+A stepwise, tested migration path between Plane releases is provided — see
+[docs/MIGRATION.md](docs/MIGRATION.md).
 
 ---
 
@@ -145,26 +148,52 @@ instance setup wizard to create the first admin account.
 
 ---
 
-## Updating Plane
+## Updating / migrating Plane
 
-1. Update `APP_RELEASE` in `.env` if you want to pin to a specific version
-   (leave as `stable` to always get the latest stable release).
-2. Pull new images and restart:
+**Stepwise migration (recommended).**  Upgrade one release at a time, with a
+backup before every step and the test suite run after every step:
 
-   ```bash
-   ./setup.sh pull
-   ./setup.sh restart
-   ```
+```bash
+./setup.sh backup            # safety net
+./setup.sh upgrade           # v1.2.3 → v1.3.0 → v1.3.1 → v1.4.0 → v1.4.1
+```
 
-   The `migrator` service runs automatically on `up -d` and applies any new
-   database migrations.  You can also run migrations explicitly:
+`upgrade` walks [`releases/order.txt`](releases/order.txt), backs up before
+each step, applies the per-release override, pulls images, runs migrations,
+restarts, and re-runs the test suite.  See
+[docs/MIGRATION.md](docs/MIGRATION.md) for the full procedure and per-release
+notes.
 
-   ```bash
-   ./setup.sh migrate
-   ```
+**Single-step manual update.**  If you only need to move the pinned tag
+(not a full migration), update `APP_RELEASE` in `.env` and restart:
+
+```bash
+./setup.sh pull
+./setup.sh restart
+```
+
+The `migrator` service runs automatically on `up -d` and applies any new
+database migrations.  You can also run migrations explicitly:
+
+```bash
+./setup.sh migrate
+```
 
 > Re-running `install` is **not** needed for updates.  It is a one-time
 > setup step.
+
+---
+
+## Backup & restore
+
+```bash
+./setup.sh backup                         # PostgreSQL dump + MinIO files
+./setup.sh restore backups/<timestamp>    # restore database + files
+```
+
+Backups are stored under `BACKUP_DIR` (default `backups/`) with a manifest,
+the database dump, the MinIO volume archive, and a copy of `.env`.  See
+[docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).
 
 ---
 
@@ -184,8 +213,9 @@ covering:
 ## Running the test suite
 
 Tests run entirely inside Docker against a separate nginx container that
-mirrors the production proxy setup.  26 tests cover startup, God Mode,
-the REST API, object-storage reachability, and WebSocket upgrade.
+mirrors the production proxy setup.  The suite covers startup, God Mode,
+the REST API, object-storage reachability, WebSocket upgrade, the `setup.sh`
+lifecycle, backup/restore, and the stepwise migration logic.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.test.yml \
@@ -236,22 +266,32 @@ automatic renewal.
 ```
 plane-docker/
 ├── VERSION                      ← this config's version (not Plane's version)
+├── CHANGES.md                   ← changelog of this configuration wrapper
 ├── .env.example                 ← template — copy to .env and fill in secrets
 ├── docker-compose.yml           ← production stack
 ├── docker-compose.test.yml      ← test overlay (nginx mirror + pytest runner)
-├── setup.sh                     ← bootstrap script
+├── setup.sh                     ← bootstrap, backup/restore, and migration script
+├── releases/
+│   ├── order.txt                ← canonical migration order (oldest → newest)
+│   └── vX.Y.Z.env               ← per-release configuration overrides
 ├── nginx/
 │   ├── nginx.conf               ← system nginx reference configuration
 │   └── templates/
 │       └── plane.conf.template  ← virtual-host template (envsubst)
 ├── docs/
 │   ├── ARCHITECTURE.md          ← service topology, proxy chain, port guide
-│   └── ENV_VARS.md              ← complete environment-variable reference
+│   ├── ENV_VARS.md              ← complete environment-variable reference
+│   ├── MIGRATION.md             ← stepwise migration guide
+│   ├── BACKUP_RESTORE.md        ← backup & restore procedure
+│   ├── SECRET_ROTATION.md       ← safe secret-rotation procedure
+│   ├── SECURITY_AUDIT.md        ← docker-compose security audit
+│   └── releases/                ← per-release migration notes
 └── tests/
     ├── conftest.py              ← pytest fixtures and wait helpers
+    ├── support.py               ← shared fake-docker helpers
     ├── Dockerfile.test          ← test-runner image
     ├── requirements.txt         ← Python test dependencies
-    └── test_0{1..5}_*.py        ← 26 tests covering all major subsystems
+    └── test_0{1..9}_*.py        ← startup, API, storage, WS, setup, backup, migration
 ```
 
 ---
@@ -276,8 +316,11 @@ docker compose logs -f api
 # One-off Django management command
 docker compose run --rm api python manage.py shell
 
-# Backup PostgreSQL
-docker compose exec plane-db pg_dump -U plane plane > backup.sql
+# Backup PostgreSQL + uploaded files (MinIO)
+./setup.sh backup
+
+# Stepwise migration to the latest release
+./setup.sh upgrade
 
 # Show this config's version
 cat VERSION

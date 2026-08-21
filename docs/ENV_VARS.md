@@ -26,7 +26,8 @@ consumed by this Docker Compose stack.  All variables are read from the
 11. [Email (SMTP)](#11-email-smtp)
 12. [OAuth integrations](#12-oauth-integrations)
 13. [Caddy internal proxy](#13-caddy-internal-proxy)
-14. [Quick-start checklist](#14-quick-start-checklist)
+14. [Backup & migration](#14-backup--migration)
+15. [Quick-start checklist](#15-quick-start-checklist)
 
 ---
 
@@ -109,8 +110,8 @@ always resolves to the latest stable Community Edition release.  Pin to a
 specific release for reproducible deployments:
 
 ```dotenv
-APP_RELEASE=stable        # latest CE stable (recommended)
-APP_RELEASE=v0.23.0       # pinned version
+APP_RELEASE=stable        # latest CE stable (recommended for new installs)
+APP_RELEASE=v1.4.1        # pinned version
 ```
 
 > All Plane services (`plane-backend`, `plane-frontend`, `plane-space`,
@@ -284,6 +285,25 @@ SECRET_KEY=your_64_character_random_hex_string_here
 
 Changing this value in a running instance will invalidate all existing
 sessions, forcing all users to log in again.
+
+### `LIVE_SERVER_SECRET_KEY`
+
+| | |
+|---|---|
+| **Required** | **Yes — must be changed** |
+| **Default** | none |
+| **Used by** | `api`, `worker`, `beat-worker`, `migrator`, `live` |
+
+Secret shared between the Django backend and the realtime (`live`) WebSocket
+service.  It **must be identical** across all five services or realtime
+collaboration silently breaks.  `setup.sh install` generates it
+automatically.
+
+```dotenv
+LIVE_SERVER_SECRET_KEY=your_64_character_random_hex_string_here
+```
+
+Rotate it following [docs/SECRET_ROTATION.md](SECRET_ROTATION.md).
 
 ---
 
@@ -603,6 +623,37 @@ GUNICORN_WORKERS=3    # for a 1 vCPU server
 GUNICORN_WORKERS=5    # for a 2 vCPU server
 ```
 
+### Resource limits (`*_CPU_LIMIT`, `*_MEM_LIMIT`)
+
+Every container has hard CPU, memory and pids caps applied through
+`deploy.resources.limits`.  The caps are tunable per service via environment
+variables — CPU in cores (fractional allowed), memory in `b`/`k`/`m`/`g`.
+Defaults are shown below; adjust to your host size.
+
+| Variable | Default | Applies to |
+|----------|---------|------------|
+| `MIGRATOR_CPU_LIMIT` / `MIGRATOR_MEM_LIMIT` | `1.0` / `1g` | `migrator` |
+| `API_CPU_LIMIT` / `API_MEM_LIMIT` | `2.0` / `2g` | `api` |
+| `WORKER_CPU_LIMIT` / `WORKER_MEM_LIMIT` | `2.0` / `2g` | `worker` |
+| `BEAT_WORKER_CPU_LIMIT` / `BEAT_WORKER_MEM_LIMIT` | `0.5` / `512m` | `beat-worker` |
+| `WEB_CPU_LIMIT` / `WEB_MEM_LIMIT` | `1.0` / `512m` | `web` |
+| `SPACE_CPU_LIMIT` / `SPACE_MEM_LIMIT` | `1.0` / `512m` | `space` |
+| `ADMIN_CPU_LIMIT` / `ADMIN_MEM_LIMIT` | `1.0` / `512m` | `admin` |
+| `LIVE_CPU_LIMIT` / `LIVE_MEM_LIMIT` | `1.0` / `512m` | `live` |
+| `PROXY_CPU_LIMIT` / `PROXY_MEM_LIMIT` | `1.0` / `256m` | `plane-proxy` |
+| `DB_CPU_LIMIT` / `DB_MEM_LIMIT` | `2.0` / `2g` | `plane-db` |
+| `REDIS_CPU_LIMIT` / `REDIS_MEM_LIMIT` | `1.0` / `512m` | `plane-redis` |
+| `MQ_CPU_LIMIT` / `MQ_MEM_LIMIT` | `1.0` / `1g` | `plane-mq` |
+| `MINIO_CPU_LIMIT` / `MINIO_MEM_LIMIT` | `2.0` / `1g` | `plane-minio` |
+
+```dotenv
+LIVE_CPU_LIMIT=1.0
+LIVE_MEM_LIMIT=512m
+```
+
+> The `pids` limit is a fixed per-service value in `docker-compose.yml` and is
+> not exposed as an environment variable.
+
 ---
 
 ## 11. Email (SMTP)
@@ -819,7 +870,50 @@ for completeness and must be left empty (or at their defaults).
 
 ---
 
-## 14. Quick-start checklist
+## 14. Backup & migration
+
+These variables are consumed by `./setup.sh backup` and `./setup.sh upgrade`
+only — they are **not** passed to Plane containers.
+
+### `BACKUP_DIR`
+
+| | |
+|---|---|
+| **Required** | No |
+| **Default** | `backups` |
+| **Used by** | `setup.sh backup`, `setup.sh upgrade` |
+
+Directory (relative to the repository root) where `./setup.sh backup` stores
+timestamped backups.
+
+```dotenv
+BACKUP_DIR=backups            # default
+BACKUP_DIR=/srv/plane-backups # absolute path (recommended on the server)
+```
+
+Each backup directory contains `manifest.txt`, a copy of `.env`, and the
+`db/` and `files/` subdirectories.  See
+[docs/BACKUP_RESTORE.md](BACKUP_RESTORE.md) for the full layout.
+
+### `BACKUP_RETENTION_DAYS`
+
+| | |
+|---|---|
+| **Required** | No |
+| **Default** | `30` |
+| **Used by** | `setup.sh backup` |
+
+Number of days to keep backups.  `./setup.sh backup` prunes backup
+directories older than this value.  Set to `0` to disable pruning.
+
+```dotenv
+BACKUP_RETENTION_DAYS=30     # keep one month
+BACKUP_RETENTION_DAYS=0      # never prune automatically
+```
+
+---
+
+## 15. Quick-start checklist
 
 The following variables **must** be set to non-default values before the
 first `docker compose up`:

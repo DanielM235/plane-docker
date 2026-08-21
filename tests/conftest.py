@@ -14,6 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from support import build_workspace
+
 # ----------------------------------------------------------------
 # Configuration — supplied via environment (set in docker-compose.test.yml)
 # ----------------------------------------------------------------
@@ -91,8 +93,19 @@ def wait_for_nginx(session):
     """
     Session-wide fixture: block until the nginx layer is ready.
     This must succeed before any test runs.
+
+    Set SKIP_NGINX_WAIT=1 to skip the wait — used when running only the
+    pure unit tests (test_06..09) without the full Plane stack.
     """
+    if os.environ.get("SKIP_NGINX_WAIT") == "1":
+        return
     wait_for_url(f"{BASE_URL}/", label="nginx → plane", timeout=TEST_TIMEOUT)
+
+
+@pytest.fixture()
+def workspace(tmp_path):
+    """Isolated project copy with a fake docker binary on PATH."""
+    return build_workspace(tmp_path)
 
 
 @pytest.fixture(scope="session")

@@ -18,6 +18,9 @@ logs/
 # Docker-related
 .docker/
 
+# Backups produced by ./setup.sh backup
+backups/
+
 # Volumes (if you mount project subfolders for persistence)
 data/
 volumes/
