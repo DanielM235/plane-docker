@@ -109,6 +109,21 @@ class TestHardening:
         caps = compose["services"][service].get("cap_drop", [])
         assert "ALL" in caps, f"{service} must drop all capabilities"
 
+    def test_db_runs_as_postgres_user(self, compose):
+        """plane-db must run as postgres so cap_drop ALL does not block its
+        first-boot chown/chmod/su-exec privilege switch."""
+        assert compose["services"]["plane-db"].get("user") == "postgres"
+
+    def test_redis_runs_as_redis_user(self, compose):
+        assert compose["services"]["plane-redis"].get("user") == "redis"
+
+    @pytest.mark.parametrize("service", ["api", "worker", "beat-worker", "migrator"])
+    def test_backend_runs_non_root(self, compose, service):
+        user = compose["services"][service].get("user")
+        assert user and user not in ("root", "0"), (
+            f"{service} must run as a non-root user, got {user!r}"
+        )
+
 
 class TestSecurityDocs:
     """The audit and secret-rotation guides must exist."""

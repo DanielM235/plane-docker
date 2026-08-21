@@ -11,7 +11,7 @@ disposition of each finding.  It is updated whenever the stack is audited.
 | 2 | `live` missing `REDIS_URL` → could not reach Redis | High | **Fixed** |
 | 3 | No healthcheck on `worker`, `beat-worker`, `live` | Medium | **Fixed** |
 | 4 | No CPU/memory/pids limits → runaway process exhaustion | High | **Fixed** |
-| 5 | Backend/worker containers run as root | Medium | Open (upstream constraint) |
+| 5 | Backend/worker containers run as root | Medium | **Fixed** |
 | 6 | `minio/minio:latest` unpinned | Medium | Open (recommendation) |
 | 7 | `TRUSTED_PROXIES` default `0.0.0.0/0` | Low | Acceptable (documented) |
 | 8 | `read_only: true` not applied broadly | Low | Open (upstream constraint) |
@@ -44,14 +44,16 @@ disposition of each finding.  It is updated whenever the stack is audited.
   `docs/ENV_VARS.md`).  A spinning process can no longer consume more than its
   allotted CPU and will eventually be killed by its memory/pids ceiling.
 
-### 5 — Containers run as root (open)
+### 5 — Containers run as root (fixed)
 
-The backend images run their processes as `root` (Celery logs a
-"superuser privileges" warning).  This is inherited from the upstream
-`makeplane/plane-backend` image.  Running as a non-root `user:` is possible
-only if the upstream image is built to support it; enabling it unvalidated can
-break the API/worker.  **Recommendation:** track upstream support and add
-`user:` once verified.
+The backend services (`api`, `worker`, `beat-worker`, `migrator`) now run as
+`user: nobody`.  The upstream image ships a world-writable `/code`, so logs
+and Python bytecode caches still work.  This silences Celery's "superuser
+privileges" warning and removes root from every long-running service.
+
+The stateful infra services also run non-root: `plane-db` as `user: postgres`
+and `plane-redis` as `user: redis`, so all services keep `cap_drop: [ALL]`
+without breaking their first-boot privilege switches.
 
 ### 6 — `minio/minio:latest` (open)
 

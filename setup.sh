@@ -87,6 +87,18 @@ check_prerequisites() {
     error "Docker Compose v2 plugin not found. Run: apt install docker-compose-plugin"
   fi
 
+  # Kernel memory overcommit — Redis requires it for background saves and
+  # replication to be reliable under memory pressure.
+  if [[ -r /proc/sys/vm/overcommit_memory ]]; then
+    local overcommit
+    overcommit="$(cat /proc/sys/vm/overcommit_memory 2>/dev/null || echo 0)"
+    if [[ "$overcommit" != "1" ]]; then
+      warn "vm.overcommit_memory=${overcommit} — Redis background saves may fail."
+      warn "  Fix on the host: sysctl vm.overcommit_memory=1"
+      warn "  and persist it in /etc/sysctl.conf.  See docs/TROUBLESHOOTING.md."
+    fi
+  fi
+
   success "All prerequisites satisfied."
 }
 

@@ -26,6 +26,8 @@ services:
     image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
     pull_policy: ${PULL_POLICY:-if_not_present}
     container_name: ${COMPOSE_PROJECT_NAME}-migrator
+    # Run as a non-root user (the upstream image defaults to root).
+    user: nobody
     command: ./bin/docker-entrypoint-migrator.sh
     environment:
       DEBUG: ${DEBUG:-0}
@@ -68,6 +70,8 @@ services:
     image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
     pull_policy: ${PULL_POLICY:-if_not_present}
     container_name: ${COMPOSE_PROJECT_NAME}-api
+    # Run as a non-root user (the upstream image defaults to root).
+    user: nobody
     command: ./bin/docker-entrypoint-api.sh
     environment:
       DEBUG: ${DEBUG:-0}
@@ -141,6 +145,9 @@ services:
     image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
     pull_policy: ${PULL_POLICY:-if_not_present}
     container_name: ${COMPOSE_PROJECT_NAME}-worker
+    # Run as a non-root user so Celery no longer warns about superuser
+    # privileges.  /code is world-writable, so logs still work.
+    user: nobody
     command: ./bin/docker-entrypoint-worker.sh
     environment:
       DEBUG: ${DEBUG:-0}
@@ -201,6 +208,8 @@ services:
     image: ${DOCKERHUB_USER:-makeplane}/plane-backend:${APP_RELEASE:-stable}
     pull_policy: ${PULL_POLICY:-if_not_present}
     container_name: ${COMPOSE_PROJECT_NAME}-beat-worker
+    # Run as a non-root user (the upstream image defaults to root).
+    user: nobody
     command: ./bin/docker-entrypoint-beat.sh
     environment:
       DEBUG: ${DEBUG:-0}
@@ -468,6 +477,10 @@ services:
   plane-db:
     image: postgres:15.7-alpine
     container_name: ${COMPOSE_PROJECT_NAME}-db
+    # Run directly as the postgres user so cap_drop:ALL does not block the
+    # internal privilege-switch (chown/chmod/su-exec) that the Alpine
+    # postgres image performs on first boot.
+    user: postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-plane}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -481,11 +494,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      # postgres entrypoint chowns PGDATA and drops to the postgres user
-      - CHOWN
-      - SETUID
-      - SETGID
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plane} -d ${POSTGRES_DB:-plane}"]
       interval: 10s

@@ -31,6 +31,16 @@ It is used to generate commit messages when merging feature branches.
 - Added CPU / memory / pids resource limits to every service (tunable via
   `*_CPU_LIMIT` / `*_MEM_LIMIT` environment variables).
 - `setup.sh install` now generates `LIVE_SERVER_SECRET_KEY`.
+- `plane-db` now runs as `user: postgres` (instead of relying on `cap_add`)
+  so `cap_drop: [ALL]` no longer blocks PostgreSQL's first-boot
+  `chown`/`chmod`/`su-exec` privilege switch ("chmod … Operation not
+  permitted" fix).  `plane-redis` uses the same pattern (`user: redis`).
+- Backend services (`api`, `worker`, `beat-worker`, `migrator`) now run as
+  `user: nobody` — silences Celery's "superuser privileges" warning and
+  removes root from every long-running service.
+- `setup.sh install` now warns when `vm.overcommit_memory` is not `1` on the
+  host (required by Redis for reliable background saves); documented in
+  `docs/TROUBLESHOOTING.md`.
 
 ### Added (hardening docs)
 - `docs/SECRET_ROTATION.md` and `docs/SECURITY_AUDIT.md`.

@@ -13,6 +13,7 @@ Plane CE installation.
 4. [SMTP / email not working](#4-smtp--email-not-working)
 5. [Reset the admin password without email](#5-reset-the-admin-password-without-email)
 6. [General debugging commands](#6-general-debugging-commands)
+7. [Redis — "Memory overcommit must be enabled!"](#7-redis--memory-overcommit-must-be-enabled)
 
 ---
 
@@ -368,3 +369,37 @@ This is safe to run at any time — migrations are idempotent.
 ./setup.sh pull          # pulls latest images for the current APP_RELEASE tag
 docker compose up -d --force-recreate
 ```
+
+---
+
+## 7. Redis — "Memory overcommit must be enabled!"
+
+### Symptom
+
+```text
+1:C 21 Aug 2026 19:07:34.244 # WARNING Memory overcommit must be enabled! ...
+```
+
+Redis prints this warning when the host's `vm.overcommit_memory` sysctl is
+`0` (the Linux default).  Without it, a background save or replication may
+fail under low-memory conditions.
+
+### Fix (on the host)
+
+```bash
+# Enable immediately
+sudo sysctl vm.overcommit_memory=1
+
+# Make it persistent across reboots
+sudo sh -c 'echo "vm.overcommit_memory = 1" >> /etc/sysctl.conf'
+```
+
+No container restart is strictly required, but restart Redis to clear the
+warning:
+
+```bash
+docker compose restart plane-redis
+```
+
+`./setup.sh install` now warns about this too when it detects the value is
+not `1`.
