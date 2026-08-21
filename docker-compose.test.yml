@@ -71,6 +71,10 @@ services:
       # Expose the project root read-only so test_06_setup_sh.py can copy
       # setup.sh, .env.example, and VERSION into isolated tmp directories.
       - ./:/project:ro
+      # Allow test_11_db_first_boot.py to spin up a real postgres container
+      # (fresh volume, user: postgres, cap_drop: ALL) to validate first-boot
+      # database initialisation without admin rights.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # Base URL all tests use — always via nginx, never internal services
       BASE_URL: http://nginx-test:80

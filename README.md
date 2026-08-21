@@ -222,6 +222,13 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml \
   run --rm --build test-runner
 ```
 
+The suite also validates first-boot database initialisation (`test_11`): it
+boots a fresh `postgres:15.7-alpine` container as the non-root `postgres`
+user with all capabilities dropped, to prove the hardened `plane-db` service
+can initialise a brand-new volume.  That test requires the Docker socket,
+which is mounted into the test-runner by `docker-compose.test.yml`; it is
+skipped automatically when the socket is not available.
+
 ---
 
 ## Multiple instances on the same host

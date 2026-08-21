@@ -41,6 +41,10 @@ It is used to generate commit messages when merging feature branches.
 - `setup.sh install` now warns when `vm.overcommit_memory` is not `1` on the
   host (required by Redis for reliable background saves); documented in
   `docs/TROUBLESHOOTING.md`.
+- Added `tests/test_11_db_first_boot.py` — boots `postgres:15.7-alpine` as
+  `user: postgres` with `cap_drop: [ALL]` against a **fresh** volume and
+  asserts a successful `initdb`/first start (the Docker socket is mounted
+  into the test-runner for this; the test skips if it is unavailable).
 
 ### Added (hardening docs)
 - `docs/SECRET_ROTATION.md` and `docs/SECURITY_AUDIT.md`.
